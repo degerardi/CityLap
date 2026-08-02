@@ -278,3 +278,14 @@ select {
   font-size: 14px;
   line-height: 1.5;
 }
+
+/* Elevation note under the results list */
+#elev-note:empty {
+  display: none;
+}
+.elev-note-loading {
+  color: #8a6100;
+}
+.elev-note-error {
+  color: var(--danger);
+}

@@ -40,11 +40,13 @@ OpenStreetMap tiles.
      (residential/living_street cheap; secondary expensive; primary and above
      excluded). Or sort by proximity to the start point.
 5. **Elevation** — the OSM/Overpass highway data has no elevation, so each
-   loop's climb is looked up separately from a free, key-less elevation service
-   ([OpenTopoData](https://www.opentopodata.org/), global `mapzen` terrain). The
-   loop is sampled to ≤100 points, and the total climb (and low→high range) is
-   reported per loop. Lookups are throttled (~1/second) and degrade gracefully
-   to "elevation n/a" if the service is unavailable.
+   loop's climb is looked up separately from free, key-less, CORS-enabled
+   elevation APIs: [Open-Meteo](https://open-meteo.com/en/docs/elevation-api)
+   first, falling back to [OpenTopoData](https://www.opentopodata.org/) if it's
+   unreachable. Each loop is sampled to ≤100 points, and the total climb (and
+   low→high range) is reported per loop, along with which service answered. If
+   both providers fail, the reason is shown ("Couldn't load elevation: …")
+   rather than failing silently.
 6. **Map** — candidate loops are drawn as tappable polylines. Tap one for its
    distance, crossings, street type and climb. Loading and error states are
    shown throughout (Overpass can be slow).

@@ -325,13 +325,22 @@ function elevPopupLine(result) {
     const range = Math.round(metersToFeet(result.elev.rangeM));
     return `↑ ${gain} ft climb (${range} ft between low and high)`;
   }
-  if (result.elevErr) return "Elevation unavailable";
+  if (result.elevErr) return "Elevation unavailable: " + result.elevErr;
   return "Elevation: loading…";
 }
 
-// Look up each drawn loop's climb, one at a time (the service is throttled to
-// ~1 request/second). Bails out if a newer render supersedes this one.
+// Look up each drawn loop's climb, one at a time. Reports the outcome in the
+// elevation note so a failure is visible instead of a silent "n/a". Bails out
+// if a newer render supersedes this one.
 async function loadElevations(token) {
+  const pending = drawn.filter((it) => !it.result.elev && !it.result.elevErr);
+  if (!pending.length) {
+    updateElevNote(token);
+    return;
+  }
+  setElevNote("Loading elevation…", "loading");
+
+  let lastError = null;
   for (const item of drawn) {
     if (token !== elevToken) return;
     const r = item.result;
@@ -339,21 +348,48 @@ async function loadElevations(token) {
       try {
         r.elev = await loopElevation(r.latlngs);
       } catch (e) {
-        // The service is down or unreachable — mark every remaining loop n/a
-        // rather than crawling through more slow failures.
+        // Provider(s) failed — record the reason and mark every remaining loop
+        // n/a rather than retrying a service that's clearly unavailable.
+        lastError = e.message || String(e);
         if (token !== elevToken) return;
         for (const other of drawn) {
-          if (!other.result.elev) {
-            other.result.elevErr = true;
+          if (!other.result.elev && !other.result.elevErr) {
+            other.result.elevErr = lastError;
             updateElevDisplay(other);
           }
         }
-        return;
+        break;
       }
       if (token !== elevToken) return;
     }
     updateElevDisplay(item);
   }
+
+  if (token !== elevToken) return;
+  updateElevNote(token, lastError);
+}
+
+// Summarise the elevation outcome across the drawn loops.
+function updateElevNote(token, lastError) {
+  if (token !== elevToken) return;
+  const okCount = drawn.filter((it) => it.result.elev).length;
+  const errCount = drawn.filter((it) => it.result.elevErr).length;
+  if (errCount && !okCount) {
+    setElevNote("Couldn't load elevation: " + (lastError || "service unavailable"), "error");
+  } else if (errCount) {
+    setElevNote(`Elevation loaded for ${okCount}; ${errCount} unavailable.`, "info");
+  } else if (okCount) {
+    const src = drawn.find((it) => it.result.elev).result.elev.source;
+    setElevNote(`Elevation via ${src}.`, "info");
+  } else {
+    setElevNote("", "info");
+  }
+}
+
+function setElevNote(message, kind) {
+  const node = el("elev-note");
+  node.textContent = message;
+  node.className = "readout elev-note-" + (kind || "info");
 }
 
 // Refresh a single loop's row + popup once its elevation is known.
@@ -366,6 +402,7 @@ function clearResults() {
   resultsLayer.clearLayers();
   drawn = [];
   el("results").innerHTML = "";
+  setElevNote("", "info");
 }
 
 // --- status ---------------------------------------------------------------
