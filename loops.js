@@ -47,6 +47,50 @@ function edgeCrossWeight(graph, key) {
   return w;
 }
 
+// How busy a street is to *run along* (its surface), as a tier:
+//   0 quiet (residential, living_street, footway, path, cycleway, service, …)
+//   1 tertiary        2 secondary        3 primary / trunk / motorway
+const SURFACE_TIER = {
+  path: 0, footway: 0, pedestrian: 0, steps: 0, cycleway: 0, track: 0,
+  bridleway: 0, living_street: 0, residential: 0, service: 0,
+  unclassified: 0, road: 0,
+  tertiary: 1, tertiary_link: 1,
+  secondary: 2, secondary_link: 2,
+  primary: 3, primary_link: 3, trunk: 3, trunk_link: 3,
+  motorway: 3, motorway_link: 3,
+};
+const TIER_LABEL = ["quiet streets", "up to tertiary", "up to secondary", "busy roads"];
+
+// Friendly label for the busiest street a loop runs on.
+export function surfaceLabel(tier) {
+  return TIER_LABEL[tier] || "mixed streets";
+}
+
+function classTier(klass) {
+  const t = SURFACE_TIER[klass];
+  return t === undefined ? 1 : t;
+}
+
+// Busiest tier of an edge, taking the quietest class mapped to that edge (if a
+// segment is also a footway, you can run the footway).
+function edgeSurfaceTier(graph, key) {
+  const set = graph.edgeClasses.get(key);
+  if (!set) return 1;
+  let t = Infinity;
+  for (const k of set) t = Math.min(t, classTier(k));
+  return t;
+}
+
+// Busiest street the loop runs along — the tier we test against the user's cap.
+function ringSurfaceTier(ring, graph) {
+  let maxT = 0;
+  for (let i = 0; i + 1 < ring.length; i++) {
+    const t = edgeSurfaceTier(graph, edgeKey(ring[i], ring[i + 1]));
+    if (t > maxT) maxT = t;
+  }
+  return maxT;
+}
+
 // ---------------------------------------------------------------------------
 // loopCrossings — how many streets you actually cross to run this loop.
 //
@@ -136,7 +180,11 @@ export function metersToMiles(m) {
 // ---------------------------------------------------------------------------
 // findLoops — assemble candidates within [target - tol, target + tol].
 // ---------------------------------------------------------------------------
-export function findLoops(graph, faces, { targetMeters, toleranceMeters }) {
+export function findLoops(
+  graph,
+  faces,
+  { targetMeters, toleranceMeters, maxSurfaceTier = 1 }
+) {
   const lo = targetMeters - toleranceMeters;
   const hi = targetMeters + toleranceMeters;
   const out = [];
@@ -147,6 +195,8 @@ export function findLoops(graph, faces, { targetMeters, toleranceMeters }) {
   // loop geometrically rather than assuming zero.
   for (const f of faces) {
     if (f.perimeter < lo || f.perimeter > hi) continue;
+    const tier = ringSurfaceTier(f.nodeIds, graph);
+    if (tier > maxSurfaceTier) continue; // runs on a street busier than allowed
     const cx = loopCrossings(f.nodeIds, graph);
     if (cx.excluded) continue; // would cross a primary road or bigger — skip
     out.push({
@@ -154,6 +204,7 @@ export function findLoops(graph, faces, { targetMeters, toleranceMeters }) {
       distance: f.perimeter,
       crossings: cx.crossings,
       crossingCost: cx.crossingCost,
+      surfaceTier: tier,
       faceCount: 1,
       target: targetMeters,
     });
@@ -165,6 +216,8 @@ export function findLoops(graph, faces, { targetMeters, toleranceMeters }) {
     if (r.perimeter < lo || r.perimeter > hi) continue;
     if (seen.has(r.sig)) continue;
     seen.add(r.sig);
+    const tier = ringSurfaceTier(r.ring, graph);
+    if (tier > maxSurfaceTier) continue;
     const cx = loopCrossings(r.ring, graph);
     if (cx.excluded) continue;
     out.push({
@@ -172,6 +225,7 @@ export function findLoops(graph, faces, { targetMeters, toleranceMeters }) {
       distance: r.perimeter,
       crossings: cx.crossings,
       crossingCost: cx.crossingCost,
+      surfaceTier: tier,
       faceCount: r.faceCount,
       target: targetMeters,
     });

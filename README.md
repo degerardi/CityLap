@@ -11,15 +11,21 @@ OpenStreetMap tiles.
    geocoded with [Nominatim](https://nominatim.openstreetmap.org/) (throttled to
    1 request/second per their usage policy).
 2. **Controls** — target loop distance (0.25 / 0.5 / 1.0 mi presets or a custom
-   value), a ± tolerance, a 1- or 2-mile search radius, how the results are
-   sorted (best match / closest to the start), and how many to list.
+   value), a ± tolerance, a 1- or 2-mile search radius, how busy a street the
+   route may use, how the results are sorted (best match / closest to the
+   start), and how many to list.
 3. **Street network** — the app queries the [Overpass API](https://overpass-api.de/)
    for `highway` ways (and their nodes) within the radius. The last response is
    cached, so changing distance/tolerance doesn't re-query.
 4. **Loop finding** (`graph.js` + `loops.js`):
    - Build a **planar graph**: OSM nodes as vertices, street segments as edges.
+   - **Prune dead-ends** (cul-de-sacs and stub streets) by iteratively removing
+     degree-1 nodes, so loops don't detour out-and-back down a stub.
    - Extract the graph's **minimal cycles (faces)** — the city blocks — with a
      half-edge face traversal, measuring each perimeter geodesically.
+   - **Filter by running surface:** loops whose path uses a street busier than
+     you allow (quiet only / up to tertiary / up to secondary / any) are
+     dropped, so you're not routed along a multi-lane road.
    - Return faces (and simply-connected unions of adjacent faces) whose
      perimeter is within `target ± tolerance`.
    - **Count crossings geometrically:** running the loop on its interior-side

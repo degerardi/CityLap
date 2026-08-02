@@ -7,7 +7,7 @@
 
 import { fetchNetwork, geocode } from "./overpass.js";
 import { buildGraph, extractFaces, haversine } from "./graph.js";
-import { findLoops, milesToMeters, metersToMiles } from "./loops.js";
+import { findLoops, milesToMeters, metersToMiles, surfaceLabel } from "./loops.js";
 
 const DEFAULT_VIEW = [40.7128, -74.006]; // fallback map center until located
 
@@ -119,6 +119,7 @@ async function runPipeline() {
   const targetMiles = currentTargetMiles();
   const tolMiles = Math.max(0.02, parseFloat(el("tolerance").value) || 0.15);
   const radius = parseInt(el("radius").value, 10);
+  const maxSurfaceTier = parseInt(el("max-surface").value, 10);
   const targetMeters = milesToMeters(targetMiles);
   const toleranceMeters = milesToMeters(tolMiles);
 
@@ -144,7 +145,11 @@ async function runPipeline() {
 
     const graph = buildGraph(elements);
     const faces = extractFaces(graph);
-    lastLoops = findLoops(graph, faces, { targetMeters, toleranceMeters });
+    lastLoops = findLoops(graph, faces, {
+      targetMeters,
+      toleranceMeters,
+      maxSurfaceTier,
+    });
     lastMeta = { targetMiles, tolMiles };
 
     applyAndRender();
@@ -269,6 +274,7 @@ function popupHtml(miles, result) {
     result.crossings === 0
       ? "No street crossings"
       : `${result.crossings} crossing${result.crossings === 1 ? "" : "s"}`,
+    `Runs on ${surfaceLabel(result.surfaceTier)}`,
   ];
   if (result.faceCount > 1) rows.push(`${result.faceCount} blocks`);
   return `<div class="popup">${rows.join("<br>")}</div>`;

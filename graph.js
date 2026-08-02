@@ -83,6 +83,12 @@ export function buildGraph(elements) {
   }
 
   // Pre-sort each vertex's neighbors counter-clockwise by outgoing angle, and
+  // Prune dead-ends before extracting faces: iteratively drop any node with
+  // one (or zero) neighbours, which peels off cul-de-sacs and stub streets so
+  // they don't get traced as out-and-back detours inside a block loop. What
+  // remains is exactly the part of the network that lies on some cycle.
+  pruneLeaves(neighbors);
+
   // remember each neighbor's index. Face traversal (below) leans on this order.
   const sortedNeighbors = new Map(); // id -> [neighborId, ...] (ccw)
   const neighborIndex = new Map(); // id -> Map(neighborId -> index)
@@ -102,6 +108,26 @@ export function buildGraph(elements) {
   }
 
   return { nodes, neighbors, edgeClasses, sortedNeighbors, neighborIndex };
+}
+
+// Iteratively remove degree-0/1 nodes from the adjacency. Removing a leaf can
+// turn its neighbour into a new leaf, so we cascade until only cycle nodes
+// (degree >= 2) remain. Mutates `neighbors` in place.
+function pruneLeaves(neighbors) {
+  const stack = [];
+  for (const [id, set] of neighbors) if (set.size <= 1) stack.push(id);
+  while (stack.length) {
+    const id = stack.pop();
+    const set = neighbors.get(id);
+    if (!set || set.size > 1) continue; // already gone or no longer a leaf
+    for (const nb of set) {
+      const nset = neighbors.get(nb);
+      if (!nset) continue;
+      nset.delete(id);
+      if (nset.size <= 1) stack.push(nb);
+    }
+    neighbors.delete(id);
+  }
 }
 
 // ---------------------------------------------------------------------------
