@@ -1,0 +1,9 @@
+# Render static site — no build step. Serves the repository root as-is.
+# https://render.com/docs/static-sites
+services:
+  - type: web
+    name: citylap
+    runtime: static
+    # No build command: the app is plain HTML/CSS/JS modules loaded directly.
+    buildCommand: ""
+    staticPublishPath: .
