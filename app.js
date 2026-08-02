@@ -8,6 +8,7 @@
 import { fetchNetwork, geocode } from "./overpass.js";
 import { buildGraph, extractFaces, haversine } from "./graph.js";
 import { findLoops, milesToMeters, metersToMiles, surfaceLabel } from "./loops.js";
+import { loopElevation, metersToFeet } from "./elevation.js";
 
 const DEFAULT_VIEW = [40.7128, -74.006]; // fallback map center until located
 
@@ -20,6 +21,7 @@ let overpassCache = { key: null, elements: null }; // last network response
 let drawn = []; // [{ result, layer }]
 let lastLoops = null; // ranked candidates from the most recent search
 let lastMeta = null; // { targetMiles, tolMiles } for status text
+let elevToken = 0; // invalidates in-flight elevation lookups on re-render
 
 // --- element handles ------------------------------------------------------
 const el = (id) => document.getElementById(id);
@@ -57,9 +59,11 @@ function init() {
 
   el("find-loops").addEventListener("click", runPipeline);
 
-  // Sort order and result count re-render the existing results — no re-query.
+  // Sort order, crossings cap and result count re-render the existing results
+  // — no re-query needed.
   el("sort").addEventListener("change", applyAndRender);
   el("max-results").addEventListener("input", applyAndRender);
+  el("max-crossings").addEventListener("input", applyAndRender);
 
   setStatus("Set a start point to begin.", "info");
 }
@@ -166,6 +170,7 @@ async function runPipeline() {
 function applyAndRender() {
   if (!lastLoops) return;
   clearResults();
+  elevToken++; // cancel any elevation lookups still running for the old render
 
   const { targetMiles, tolMiles } = lastMeta;
   if (!lastLoops.length) {
@@ -176,11 +181,23 @@ function applyAndRender() {
     return;
   }
 
+  // Filter by how many crossings the runner will allow (default 0).
+  const maxCross = crossingCap();
+  const allowed = lastLoops.filter((l) => l.crossings <= maxCross);
+  if (!allowed.length) {
+    setStatus(
+      `No loops within ${maxCross} crossing${maxCross === 1 ? "" : "s"}. ` +
+        `Allow more crossings, widen the tolerance, or ease the street limit.`,
+      "error"
+    );
+    return;
+  }
+
   // Sort: "best" keeps the ranking from loops.js; "near" orders by how close
   // the loop is to the start point (nearest vertex).
-  let ordered = lastLoops;
+  let ordered = allowed;
   if (el("sort").value === "near" && start) {
-    ordered = lastLoops
+    ordered = allowed
       .map((l) => ({ l, d: distanceToStart(l) }))
       .sort((a, b) => a.d - b.d)
       .map((x) => x.l);
@@ -200,36 +217,47 @@ function applyAndRender() {
       opacity: 0.85,
     }).addTo(resultsLayer);
 
-    const miles = metersToMiles(result.distance).toFixed(2);
-    layer.bindPopup(popupHtml(miles, result));
+    layer.bindPopup(popupHtml(result));
     layer.on("click", () => highlight(i));
-    drawn.push({ result, layer });
     bounds.push(...result.latlngs);
 
     // List row (tapping it focuses the loop on the map).
+    const miles = metersToMiles(result.distance).toFixed(2);
     const li = document.createElement("li");
     li.className = "result-item";
     li.innerHTML =
       `<span class="swatch" style="background:${color}"></span>` +
       `<span class="result-main"><strong>${miles} mi</strong>` +
-      `<small>${crossingLabel(result)}</small></span>`;
+      `<small>${crossingLabel(result)} · ${surfaceLabel(result.surfaceTier)}</small>` +
+      `<small class="elev">${elevText(result)}</small></span>`;
     li.addEventListener("click", () => highlight(i));
     el("results").appendChild(li);
+
+    drawn.push({ result, layer, elevSpan: li.querySelector(".elev") });
   });
 
   if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
 
-  const zeros = lastLoops.filter((l) => l.crossings === 0).length;
+  const zeros = allowed.filter((l) => l.crossings === 0).length;
   const shown =
-    top.length < lastLoops.length
-      ? `Showing ${top.length} of ${lastLoops.length}`
-      : `Showing all ${lastLoops.length}`;
+    top.length < allowed.length
+      ? `Showing ${top.length} of ${allowed.length}`
+      : `Showing all ${allowed.length}`;
   setStatus(
-    `Found ${lastLoops.length} loop${lastLoops.length === 1 ? "" : "s"}` +
+    `Found ${allowed.length} loop${allowed.length === 1 ? "" : "s"}` +
       (zeros ? ` — ${zeros} with no crossings` : "") +
       `. ${shown}. Tap one for details.`,
     "info"
   );
+
+  loadElevations(elevToken); // fill in each loop's climb, throttled
+}
+
+// Read the crossings cap (0–20), defaulting to 0.
+function crossingCap() {
+  const v = parseInt(el("max-crossings").value, 10);
+  if (!Number.isFinite(v) || v < 0) return 0;
+  return Math.min(20, v);
 }
 
 // Shortest distance (m) from the start point to any vertex of a loop.
@@ -268,16 +296,70 @@ function crossingLabel(result) {
   return `${n} crossing${n === 1 ? "" : "s"}`;
 }
 
-function popupHtml(miles, result) {
+function popupHtml(result) {
+  const miles = metersToMiles(result.distance).toFixed(2);
   const rows = [
     `<strong>${miles} mi</strong> loop`,
     result.crossings === 0
       ? "No street crossings"
       : `${result.crossings} crossing${result.crossings === 1 ? "" : "s"}`,
     `Runs on ${surfaceLabel(result.surfaceTier)}`,
+    elevPopupLine(result),
   ];
   if (result.faceCount > 1) rows.push(`${result.faceCount} blocks`);
   return `<div class="popup">${rows.join("<br>")}</div>`;
+}
+
+// --- elevation ------------------------------------------------------------
+// Short list-row label, e.g. "↑ 42 ft climb".
+function elevText(result) {
+  if (result.elev) return `↑ ${Math.round(metersToFeet(result.elev.gainM))} ft climb`;
+  if (result.elevErr) return "elevation n/a";
+  return "elevation…";
+}
+
+// Fuller popup line with the high/low range too.
+function elevPopupLine(result) {
+  if (result.elev) {
+    const gain = Math.round(metersToFeet(result.elev.gainM));
+    const range = Math.round(metersToFeet(result.elev.rangeM));
+    return `↑ ${gain} ft climb (${range} ft between low and high)`;
+  }
+  if (result.elevErr) return "Elevation unavailable";
+  return "Elevation: loading…";
+}
+
+// Look up each drawn loop's climb, one at a time (the service is throttled to
+// ~1 request/second). Bails out if a newer render supersedes this one.
+async function loadElevations(token) {
+  for (const item of drawn) {
+    if (token !== elevToken) return;
+    const r = item.result;
+    if (!r.elev && !r.elevErr) {
+      try {
+        r.elev = await loopElevation(r.latlngs);
+      } catch (e) {
+        // The service is down or unreachable — mark every remaining loop n/a
+        // rather than crawling through more slow failures.
+        if (token !== elevToken) return;
+        for (const other of drawn) {
+          if (!other.result.elev) {
+            other.result.elevErr = true;
+            updateElevDisplay(other);
+          }
+        }
+        return;
+      }
+      if (token !== elevToken) return;
+    }
+    updateElevDisplay(item);
+  }
+}
+
+// Refresh a single loop's row + popup once its elevation is known.
+function updateElevDisplay(item) {
+  if (item.elevSpan) item.elevSpan.textContent = elevText(item.result);
+  item.layer.setPopupContent(popupHtml(item.result));
 }
 
 function clearResults() {

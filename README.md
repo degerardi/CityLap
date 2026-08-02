@@ -10,10 +10,11 @@ OpenStreetMap tiles.
 1. **Start point** — share your location (Geolocation API) or type an address,
    geocoded with [Nominatim](https://nominatim.openstreetmap.org/) (throttled to
    1 request/second per their usage policy).
-2. **Controls** — target loop distance (0.25 / 0.5 / 1.0 mi presets or a custom
-   value), a ± tolerance, a 1- or 2-mile search radius, how busy a street the
-   route may use, how the results are sorted (best match / closest to the
-   start), and how many to list.
+2. **Controls** — target loop distance (0.25 / 0.5 / 0.75 / 1.0 mi presets or a
+   custom value), a ± tolerance, a 1- or 2-mile search radius, how busy a street
+   the route may use, how many street crossings to allow (0–20, default 0), how
+   the results are sorted (best match / closest to the start), and how many to
+   list.
 3. **Street network** — the app queries the [Overpass API](https://overpass-api.de/)
    for `highway` ways (and their nodes) within the radius. The last response is
    cached, so changing distance/tolerance doesn't re-query.
@@ -38,9 +39,15 @@ OpenStreetMap tiles.
      penalising crossings by the OSM highway class of the street crossed
      (residential/living_street cheap; secondary expensive; primary and above
      excluded). Or sort by proximity to the start point.
-5. **Map** — candidate loops are drawn as tappable polylines. Tap one for its
-   distance and crossing count. Loading and error states are shown throughout
-   (Overpass can be slow).
+5. **Elevation** — the OSM/Overpass highway data has no elevation, so each
+   loop's climb is looked up separately from a free, key-less elevation service
+   ([OpenTopoData](https://www.opentopodata.org/), global `mapzen` terrain). The
+   loop is sampled to ≤100 points, and the total climb (and low→high range) is
+   reported per loop. Lookups are throttled (~1/second) and degrade gracefully
+   to "elevation n/a" if the service is unavailable.
+6. **Map** — candidate loops are drawn as tappable polylines. Tap one for its
+   distance, crossings, street type and climb. Loading and error states are
+   shown throughout (Overpass can be slow).
 
 ## Files
 
@@ -50,6 +57,7 @@ OpenStreetMap tiles.
 | `style.css` | Mobile-first styling (works in mobile Safari) |
 | `app.js` | UI, map, geolocation, orchestration |
 | `overpass.js` | Overpass + Nominatim network calls |
+| `elevation.js` | Per-loop elevation lookup (OpenTopoData) |
 | `graph.js` | Planar graph build + face extraction (reusable) |
 | `loops.js` | Loop candidate assembly + ranking (reusable) |
 

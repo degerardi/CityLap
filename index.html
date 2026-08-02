@@ -52,6 +52,7 @@
         <div class="presets" role="group" aria-label="Distance presets">
           <button type="button" class="chip" data-miles="0.25">0.25 mi</button>
           <button type="button" class="chip is-active" data-miles="0.5">0.5 mi</button>
+          <button type="button" class="chip" data-miles="0.75">0.75 mi</button>
           <button type="button" class="chip" data-miles="1">1.0 mi</button>
         </div>
         <label class="field">
@@ -83,6 +84,10 @@
       <!-- 3. How results are listed -->
       <fieldset class="group">
         <legend>Results</legend>
+        <label class="field">
+          <span>Crossings allowed (0–20)</span>
+          <input id="max-crossings" type="number" min="0" max="20" step="1" value="0" />
+        </label>
         <label class="field">
           <span>Sort by</span>
           <select id="sort">
