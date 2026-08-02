@@ -11,7 +11,8 @@ OpenStreetMap tiles.
    geocoded with [Nominatim](https://nominatim.openstreetmap.org/) (throttled to
    1 request/second per their usage policy).
 2. **Controls** — target loop distance (0.25 / 0.5 / 1.0 mi presets or a custom
-   value), a ± tolerance, and a 1- or 2-mile search radius.
+   value), a ± tolerance, a 1- or 2-mile search radius, how the results are
+   sorted (best match / closest to the start), and how many to list.
 3. **Street network** — the app queries the [Overpass API](https://overpass-api.de/)
    for `highway` ways (and their nodes) within the radius. The last response is
    cached, so changing distance/tolerance doesn't re-query.
@@ -21,10 +22,16 @@ OpenStreetMap tiles.
      half-edge face traversal, measuring each perimeter geodesically.
    - Return faces (and simply-connected unions of adjacent faces) whose
      perimeter is within `target ± tolerance`.
+   - **Count crossings geometrically:** running the loop on its interior-side
+     sidewalk, any street that points into the loop's interior is one you cross.
+     A plain empty block scores 0; a block with a street cutting into it, a
+     perimeter running straight through an intersection, or a merged loop that
+     swallows a dividing street each register the crossing(s). Loops that would
+     cross a primary road or bigger are excluded outright.
    - **Rank** them: zero-crossing block loops first, then by fewest crossings,
      penalising crossings by the OSM highway class of the street crossed
      (residential/living_street cheap; secondary expensive; primary and above
-     excluded).
+     excluded). Or sort by proximity to the start point.
 5. **Map** — candidate loops are drawn as tappable polylines. Tap one for its
    distance and crossing count. Loading and error states are shown throughout
    (Overpass can be slow).

@@ -17,7 +17,7 @@
 //   rankLoops(candidates) -> ranked[]
 // ---------------------------------------------------------------------------
 
-import { haversine } from "./graph.js";
+import { haversine, edgeKey } from "./graph.js";
 
 // Cost of crossing a street, by OSM `highway` class. Quiet streets are cheap;
 // bigger roads are expensive; primary and above are excluded (never crossed).
@@ -47,6 +47,84 @@ function edgeCrossWeight(graph, key) {
   return w;
 }
 
+// ---------------------------------------------------------------------------
+// loopCrossings — how many streets you actually cross to run this loop.
+//
+// Model: you run the loop on its interior-side sidewalk (interior on your left,
+// so we orient the ring counter-clockwise). At each node you pass, the two loop
+// edges are the streets you turn between; any *other* street at that node that
+// points into the loop's interior wedge is a street whose mouth you cross.
+//
+// A plain, empty block has no streets pointing inward -> 0 crossings. A block
+// with a spur poking in, a perimeter running straight through an intersection,
+// or a merged loop swallowing a dividing street will each register the
+// crossing(s). Crossings are priced by the OSM highway class crossed; a
+// primary road or bigger marks the whole loop excluded (never crossed).
+// ---------------------------------------------------------------------------
+export function loopCrossings(ring, graph) {
+  const { nodes, neighbors } = graph;
+  // Normalise to a simple sequence of distinct nodes (drop a repeated close).
+  let seq = ring.slice();
+  if (seq.length > 1 && seq[0] === seq[seq.length - 1]) seq = seq.slice(0, -1);
+  const n = seq.length;
+  if (n < 3) return { crossings: 0, crossingCost: 0, excluded: false };
+
+  // Orient counter-clockwise so the interior is consistently to the left.
+  if (ringSignedArea(seq, nodes) < 0) seq.reverse();
+
+  let crossings = 0;
+  let crossingCost = 0;
+  let excluded = false;
+
+  for (let i = 0; i < n; i++) {
+    const P = seq[(i - 1 + n) % n];
+    const N = seq[i];
+    const Q = seq[(i + 1) % n];
+    const cn = nodes.get(N);
+    const angP = angleTo(cn, nodes.get(P));
+    const angQ = angleTo(cn, nodes.get(Q));
+    // Interior wedge = the ccw arc swept from the outgoing edge to the incoming.
+    const span = norm(angP - angQ);
+    const nbrs = neighbors.get(N);
+    if (!nbrs) continue;
+    for (const R of nbrs) {
+      if (R === P || R === Q) continue; // the loop's own edges
+      const d = norm(angleTo(cn, nodes.get(R)) - angQ);
+      if (d > 1e-9 && d < span - 1e-9) {
+        // This street points into the loop — you cross its mouth here.
+        const w = edgeCrossWeight(graph, edgeKey(N, R));
+        crossings++;
+        if (Number.isFinite(w)) crossingCost += w;
+        else excluded = true;
+      }
+    }
+  }
+
+  return { crossings, crossingCost, excluded };
+}
+
+// Signed area of a ring using the projected (meter) coordinates. + = ccw.
+function ringSignedArea(seq, nodes) {
+  let s = 0;
+  for (let i = 0; i < seq.length; i++) {
+    const p = nodes.get(seq[i]);
+    const q = nodes.get(seq[(i + 1) % seq.length]);
+    s += p.xm * q.ym - q.xm * p.ym;
+  }
+  return s / 2;
+}
+
+// Angle of the ray from node A to node B in the projected plane.
+function angleTo(a, b) {
+  return Math.atan2(b.ym - a.ym, b.xm - a.xm);
+}
+
+// Normalise an angle to [0, 2π).
+function norm(a) {
+  const t = a % (2 * Math.PI);
+  return t < 0 ? t + 2 * Math.PI : t;
+}
+
 const MILES_TO_METERS = 1609.34;
 export function milesToMeters(mi) {
   return mi * MILES_TO_METERS;
@@ -63,18 +141,22 @@ export function findLoops(graph, faces, { targetMeters, toleranceMeters }) {
   const hi = targetMeters + toleranceMeters;
   const out = [];
 
-  // 1) Single-block loops — zero crossings, the best kind.
+  // 1) Single-block loops. A plain, empty block has zero crossings — but a
+  // block with a street poking into it (a spur, or where the perimeter runs
+  // straight through an intersection) forces a crossing, so we measure every
+  // loop geometrically rather than assuming zero.
   for (const f of faces) {
-    if (f.perimeter >= lo && f.perimeter <= hi) {
-      out.push({
-        latlngs: f.latlngs,
-        distance: f.perimeter,
-        crossings: 0,
-        crossingCost: 0,
-        faceCount: 1,
-        target: targetMeters,
-      });
-    }
+    if (f.perimeter < lo || f.perimeter > hi) continue;
+    const cx = loopCrossings(f.nodeIds, graph);
+    if (cx.excluded) continue; // would cross a primary road or bigger — skip
+    out.push({
+      latlngs: f.latlngs,
+      distance: f.perimeter,
+      crossings: cx.crossings,
+      crossingCost: cx.crossingCost,
+      faceCount: 1,
+      target: targetMeters,
+    });
   }
 
   // 2) Merged multi-block loops — grown until they reach the target window.
@@ -83,11 +165,13 @@ export function findLoops(graph, faces, { targetMeters, toleranceMeters }) {
     if (r.perimeter < lo || r.perimeter > hi) continue;
     if (seen.has(r.sig)) continue;
     seen.add(r.sig);
+    const cx = loopCrossings(r.ring, graph);
+    if (cx.excluded) continue;
     out.push({
       latlngs: r.latlngs,
       distance: r.perimeter,
-      crossings: r.crossings,
-      crossingCost: r.crossingCost,
+      crossings: cx.crossings,
+      crossingCost: cx.crossingCost,
       faceCount: r.faceCount,
       target: targetMeters,
     });
@@ -189,8 +273,9 @@ function growRegions(graph, faces, hi) {
 }
 
 // Turn a set of faces into one loop: the region boundary. Edges used by exactly
-// one member face are boundary; edges shared by two members are interior
-// crossings. Returns null unless the boundary is a single simple ring.
+// one member face are boundary; edges shared by two members are interior (they
+// become crossings, counted later by loopCrossings). Returns the boundary as a
+// node ring, or null unless the boundary is a single simple ring.
 function assembleRegion(idxs, faces, graph) {
   const count = new Map();
   for (const fi of idxs) {
@@ -200,14 +285,8 @@ function assembleRegion(idxs, faces, graph) {
   }
 
   const boundary = [];
-  let crossings = 0;
-  let crossingCost = 0;
   for (const [key, c] of count) {
     if (c === 1) boundary.push(key);
-    else {
-      crossings++;
-      crossingCost += edgeCrossWeight(graph, key);
-    }
   }
   if (boundary.length < 3) return null;
 
@@ -255,8 +334,7 @@ function assembleRegion(idxs, faces, graph) {
   return {
     latlngs,
     perimeter,
-    crossings,
-    crossingCost,
+    ring,
     sig: boundary.slice().sort().join("|"),
   };
 }

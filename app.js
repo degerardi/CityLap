@@ -6,11 +6,10 @@
 // ---------------------------------------------------------------------------
 
 import { fetchNetwork, geocode } from "./overpass.js";
-import { buildGraph, extractFaces } from "./graph.js";
+import { buildGraph, extractFaces, haversine } from "./graph.js";
 import { findLoops, milesToMeters, metersToMiles } from "./loops.js";
 
 const DEFAULT_VIEW = [40.7128, -74.006]; // fallback map center until located
-const MAX_DRAWN = 12; // most loops we'll draw at once
 
 // --- app state ------------------------------------------------------------
 let map;
@@ -19,6 +18,8 @@ let startMarker;
 let start = null; // { lat, lon, label }
 let overpassCache = { key: null, elements: null }; // last network response
 let drawn = []; // [{ result, layer }]
+let lastLoops = null; // ranked candidates from the most recent search
+let lastMeta = null; // { targetMiles, tolMiles } for status text
 
 // --- element handles ------------------------------------------------------
 const el = (id) => document.getElementById(id);
@@ -55,6 +56,10 @@ function init() {
   });
 
   el("find-loops").addEventListener("click", runPipeline);
+
+  // Sort order and result count re-render the existing results — no re-query.
+  el("sort").addEventListener("change", applyAndRender);
+  el("max-results").addEventListener("input", applyAndRender);
 
   setStatus("Set a start point to begin.", "info");
 }
@@ -139,9 +144,10 @@ async function runPipeline() {
 
     const graph = buildGraph(elements);
     const faces = extractFaces(graph);
-    const loops = findLoops(graph, faces, { targetMeters, toleranceMeters });
+    lastLoops = findLoops(graph, faces, { targetMeters, toleranceMeters });
+    lastMeta = { targetMiles, tolMiles };
 
-    renderResults(loops, targetMiles, tolMiles);
+    applyAndRender();
   } catch (e) {
     setStatus(e.message || "Something went wrong.", "error");
   } finally {
@@ -150,10 +156,14 @@ async function runPipeline() {
 }
 
 // --- rendering ------------------------------------------------------------
-function renderResults(loops, targetMiles, tolMiles) {
+// Applies the current sort + result-count choices to the last search and draws
+// it. Re-runnable on its own so changing sort/count doesn't re-query the network.
+function applyAndRender() {
+  if (!lastLoops) return;
   clearResults();
 
-  if (!loops.length) {
+  const { targetMiles, tolMiles } = lastMeta;
+  if (!lastLoops.length) {
     setStatus(
       `No loops near ${targetMiles} mi (±${tolMiles} mi). Try a wider tolerance or a bigger radius.`,
       "error"
@@ -161,7 +171,20 @@ function renderResults(loops, targetMiles, tolMiles) {
     return;
   }
 
-  const top = loops.slice(0, MAX_DRAWN);
+  // Sort: "best" keeps the ranking from loops.js; "near" orders by how close
+  // the loop is to the start point (nearest vertex).
+  let ordered = lastLoops;
+  if (el("sort").value === "near" && start) {
+    ordered = lastLoops
+      .map((l) => ({ l, d: distanceToStart(l) }))
+      .sort((a, b) => a.d - b.d)
+      .map((x) => x.l);
+  }
+
+  // How many to show — blank/0 means all of them.
+  const raw = parseInt(el("max-results").value, 10);
+  const limit = Number.isFinite(raw) && raw > 0 ? raw : ordered.length;
+  const top = ordered.slice(0, limit);
   const bounds = [];
 
   top.forEach((result, i) => {
@@ -191,13 +214,27 @@ function renderResults(loops, targetMiles, tolMiles) {
 
   if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
 
-  const zeros = loops.filter((l) => l.crossings === 0).length;
+  const zeros = lastLoops.filter((l) => l.crossings === 0).length;
+  const shown =
+    top.length < lastLoops.length
+      ? `Showing ${top.length} of ${lastLoops.length}`
+      : `Showing all ${lastLoops.length}`;
   setStatus(
-    `Found ${loops.length} loop${loops.length === 1 ? "" : "s"}` +
+    `Found ${lastLoops.length} loop${lastLoops.length === 1 ? "" : "s"}` +
       (zeros ? ` — ${zeros} with no crossings` : "") +
-      `. Showing the best ${top.length}. Tap one for details.`,
+      `. ${shown}. Tap one for details.`,
     "info"
   );
+}
+
+// Shortest distance (m) from the start point to any vertex of a loop.
+function distanceToStart(loop) {
+  let best = Infinity;
+  for (const [lat, lon] of loop.latlngs) {
+    const d = haversine(start, { lat, lon });
+    if (d < best) best = d;
+  }
+  return best;
 }
 
 function highlight(index) {

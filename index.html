@@ -71,6 +71,22 @@
         </label>
       </fieldset>
 
+      <!-- 3. How results are listed -->
+      <fieldset class="group">
+        <legend>Results</legend>
+        <label class="field">
+          <span>Sort by</span>
+          <select id="sort">
+            <option value="best" selected>Best match (fewest crossings)</option>
+            <option value="near">Closest to start</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>How many to show (blank = all)</span>
+          <input id="max-results" type="number" min="1" step="1" value="10" placeholder="all" />
+        </label>
+      </fieldset>
+
       <button id="find-loops" type="button" class="btn btn-primary" disabled>
         Find loops
       </button>
